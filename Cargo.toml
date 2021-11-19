@@ -1,0 +1,16 @@
+[package]
+name = "crypto-gmp"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+gmp-mpfr-sys = { version = "1.4", default-features = false }
+subtle = "2.4"
+static_assertions = "1.1"
+zeroize = "1.4"
+
+[dev-dependencies]
+proptest = "1"
+num-bigint = "0.4"
