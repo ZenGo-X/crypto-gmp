@@ -3,7 +3,7 @@ use std::slice;
 use gmp_mpfr_sys::gmp::{self, limb_t, size_t};
 use subtle::{Choice, ConditionallySelectable};
 
-use crate::digits::{digits_from_limbs, Digit};
+use crate::digits::Digit;
 
 /// Convenient wrapper to [mpn_add_n](gmp::mpn_add_n)
 ///
@@ -159,7 +159,7 @@ mod tests {
     use proptest::test_runner::TestCaseError;
     use proptest::{prop_assert_eq, prop_assume, proptest};
 
-    use crate::digits::U128;
+    use crate::digits::{digits_from_limbs, U128};
 
     use super::*;
 

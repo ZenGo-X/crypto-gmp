@@ -155,7 +155,7 @@ where
 impl<D: AsMut<[Digit]>> BigInt<D> {
     /// Computes `a + b`, writes result to `self`
     ///
-    /// It is a low-level function allowing you to manage allocations. Its safe analogous is
+    /// It is a low-level function allowing you to manage allocations. Its safe analogue is
     /// [`&a + &b`](#impl-Add%3C%26%27_%20BigInt%3CD2%3E%3E)
     ///
     /// ## Safety
@@ -190,6 +190,71 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
             );
             self.as_mut()[a.size()] = carry;
         }
+    }
+}
+
+impl<D1, D2> std::ops::Add<D2> for &BigInt<D1>
+where
+    D1: AsRef<[Digit]>,
+    D2: Into<Digit>,
+{
+    type Output = BigInt;
+
+    /// Computes `self + rhs` where `rhs` is a Digit (or anything that can be cast into a Digit).
+    ///
+    /// ## Constant time
+    /// Even though adding a single digit might be done in `O(1)` on average,
+    /// the number of instructions and memory access patterns of this method
+    /// deliberately remains the same for the same `self.size()`.
+    ///
+    /// ## Zeroizing
+    /// This function might allocate some auxiliary buffer on the heap.
+    /// Before deallocating, it gets zeroed out.
+    ///
+    /// ## Complexity
+    /// Complexity is always `O(self.size())`.
+    fn add(self, rhs: D2) -> Self::Output {
+        // We don't need to reorder operands as `rhs` is a single `Digit`
+        let a = self.as_ref();
+        let n = a.len();
+
+        // Get rid of empty slices: gmp code doesn't work with them
+        if n == 0 {
+            return BigInt::from_digits(&[rhs.into()]).reallocate();
+        }
+
+        // Estimate the space we need to allocate on the heap
+        let output_size = n + 1;
+        let scratch_space_size = ops::add_1_itch(n);
+        debug_assert_eq!(scratch_space_size, ScratchSpace::digit_addition(n));
+
+        // Allocate space on the heap, split it into `output` that stands for addition result and
+        // `scratch_space` that is auxiliary buffer for gmp functions
+        let mut buffer = vec![Digit::zero(); output_size + scratch_space_size];
+        let (output, scratch_space) = buffer.split_at_mut(output_size);
+
+        unsafe {
+            // Safety:
+            // * We checked that n is not zero (see match statement above)
+            // * We allocated sufficient memory for both output and scratch space
+            let carry = ops::add_1(a, rhs.into(), scratch_space, &mut output[..n]);
+            output[n] = carry;
+
+            // Note: we are comparing two size_t integers here, we assume it's constant-time
+            let last_digit_is_zero = Choice::from(u8::from(carry == Digit::zero()));
+            let output_size = size_t::conditional_select(
+                &((n + 1) as size_t),
+                &(n as size_t),
+                last_digit_is_zero,
+            ) as usize;
+
+            // Now we need to resize `buffer` to `output_size`,
+            // ie. we want to strip the allocated scratch space.
+            buffer[output_size..].zeroize();
+            buffer.resize(output_size, Digit::zero());
+        }
+
+        BigInt::from_digits(buffer.into_boxed_slice())
     }
 }
 
@@ -231,6 +296,12 @@ impl<'b> ScratchSpace<'b> {
             },
         }
     }
+
+    /// Size of scratch space required for digit addition
+    #[inline(always)]
+    pub fn digit_addition(n: usize) -> usize {
+        ops::add_1_itch(n)
+    }
 }
 
 impl<'b> From<&'b mut [Digit]> for ScratchSpace<'b> {
@@ -243,7 +314,7 @@ impl<'b> From<&'b mut [Digit]> for ScratchSpace<'b> {
 impl<'b> AsMut<[Digit]> for ScratchSpace<'b> {
     #[inline(always)]
     fn as_mut(&mut self) -> &mut [Digit] {
-        &mut self.0
+        self.0
     }
 }
 
@@ -252,12 +323,34 @@ mod tests {
     use proptest::prelude::*;
 
     use crate::digits::tests::strip_padding_u32;
+    use crate::digits::{digits_to_limbs_u32, Digit};
     use crate::BigInt;
 
     proptest! {
         #[test]
         fn add_two_numbers(a: Vec<u32>, b: Vec<u32>) {
             add_two_numbers_prop(&a, &b)?
+        }
+
+        #[test]
+        fn add_number_and_u8(a: Vec<u32>, b: u8) {
+            number_digit_addition_prop(&a, b)?
+        }
+
+        #[test]
+        fn add_number_and_u16(a: Vec<u32>, b: u16) {
+            number_digit_addition_prop(&a, b)?
+        }
+
+        #[test]
+        fn add_number_and_u32(a: Vec<u32>, b: u32) {
+            number_digit_addition_prop(&a, b)?
+        }
+
+        #[test]
+        fn add_number_and_digit(a: Vec<u32>, b: u32) {
+            let b: Digit = b.into();
+            number_digit_addition_prop(&a, b)?
         }
     }
 
@@ -278,6 +371,26 @@ mod tests {
 
         let a_num = num_bigint::BigUint::new(a.to_vec());
         let b_num = num_bigint::BigUint::new(b.to_vec());
+        let result_num = a_num + b_num;
+        let limbs_num = result_num.to_u32_digits();
+
+        prop_assert_eq!(strip_padding_u32(&limbs_gmp), limbs_num);
+
+        Ok(())
+    }
+
+    fn number_digit_addition_prop(a: &[u32], b: impl Into<Digit>) -> Result<(), TestCaseError> {
+        let b: Digit = b.into();
+        // We assume that `a` is non-negative
+        prop_assume!(a.is_empty() || (a.last().unwrap() >> 31) == 0);
+
+        let a_gmp = BigInt::from_digits_u32(a);
+        let result_gmp = &a_gmp + b;
+        let limbs_gmp = result_gmp.to_digits_u32();
+
+        let a_num = num_bigint::BigUint::new(a.to_vec());
+        let b_u32_vec = digits_to_limbs_u32(&[b]).to_vec();
+        let b_num = num_bigint::BigUint::new(b_u32_vec);
         let result_num = a_num + b_num;
         let limbs_num = result_num.to_u32_digits();
 
