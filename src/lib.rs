@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::ops::Add;
 
 use gmp_mpfr_sys::gmp::size_t;
 use subtle::{Choice, ConditionallySelectable};
@@ -155,7 +156,7 @@ where
 impl<D: AsMut<[Digit]>> BigInt<D> {
     /// Computes `a + b`, writes result to `self`
     ///
-    /// It is a low-level function allowing you to manage allocations. Its safe analogous is
+    /// It is a low-level function allowing you to manage allocations. Its safe analogue is
     /// [`&a + &b`](#impl-Add%3C%26%27_%20BigInt%3CD2%3E%3E)
     ///
     /// ## Safety
@@ -188,8 +189,164 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
                 scratch_space.as_mut(),
                 &mut self.as_mut()[..n],
             );
-            self.as_mut()[a.size()] = carry;
+            self.as_mut()[n] = carry;
         }
+    }
+}
+
+impl<D: AsRef<[Digit]>> Add<Digit> for &BigInt<D> {
+    type Output = BigInt;
+
+    /// Computes `self + rhs` where `rhs` is a `Digit`.
+    ///
+    /// ## Constant time
+    /// Even though adding a single digit might be done in `O(1)` on average,
+    /// the number of instructions and memory access patterns of this method
+    /// deliberately remains the same for the same `self.size()`.
+    ///
+    /// ## Zeroizing
+    /// This function might allocate some auxiliary buffer on the heap.
+    /// Before deallocating, it gets zeroed out.
+    ///
+    /// ## Complexity
+    /// Complexity is always `O(self.size())`.
+    fn add(self, rhs: Digit) -> Self::Output {
+        // We don't need to reorder operands as `rhs` is a single `Digit`
+        let a = self.as_ref();
+        let n = a.len();
+
+        // Get rid of empty slices: gmp code doesn't work with them
+        if n == 0 {
+            return BigInt::from_digits(&[rhs]).reallocate();
+        }
+
+        // Estimate the space we need to allocate on the heap
+        let output_size = n + 1;
+        let scratch_space_size = ScratchSpace::digit_addition(n);
+
+        // Allocate space on the heap, split it into `output` that stands for addition result and
+        // `scratch_space` that is auxiliary buffer for gmp functions
+        let mut buffer = vec![Digit::zero(); output_size + scratch_space_size];
+        let (output, scratch_space) = buffer.split_at_mut(output_size);
+        let mut output = BigInt::from_digits(output);
+        let scratch_space = ScratchSpace::new(scratch_space);
+
+        unsafe {
+            // Safety:
+            // * We checked that n is not zero (see match statement above)
+            // * We allocated sufficient memory for both output and scratch space
+            output.add_digit_unchecked(&BigInt::from_digits(a), rhs, scratch_space);
+        };
+
+        // Note: we are comparing two size_t integers here, we assume it's constant-time
+        let last_digit_is_zero = Choice::from(u8::from(output.as_ref()[n] == Digit::zero()));
+        let output_size =
+            size_t::conditional_select(&((n + 1) as size_t), &(n as size_t), last_digit_is_zero)
+                as usize;
+
+        // Now we need to resize `buffer` to `output_size`,
+        // ie. we want to strip the allocated scratch space.
+        buffer[output_size..].zeroize();
+        buffer.resize(output_size, Digit::zero());
+
+        BigInt::from_digits(buffer.into_boxed_slice())
+    }
+}
+
+impl<D: AsMut<[Digit]>> BigInt<D> {
+    /// Computes `a + b`, writes result to `self`
+    ///
+    /// It is a low-level function allowing you to manage allocations. Its safe analogue is
+    /// [`&a + b`](#impl-Add%3CDigit%3E).
+    ///
+    /// ## Safety
+    /// Assuming that `a` has [size] `n`:
+    /// * `n > 0`
+    /// * [Size][size] of `self` must be exactly `n+1` bytes
+    /// * Size of `scratch_space` must be exactly [`ScratchSpace::digit_addition(n)`](ScratchSpace::digit_addition)
+    ///
+    /// [size]: BigInt::size
+    ///
+    /// ## Constant time
+    /// This function is constant time in size of its arguments, ie. number of instructions and
+    /// memory access patterns remain the same for the same `n`.
+    pub unsafe fn add_digit_unchecked(
+        &mut self,
+        a: &BigInt<impl AsRef<[Digit]>>,
+        b: Digit,
+        mut scratch_space: ScratchSpace,
+    ) {
+        let n = a.size();
+        let carry = ops::add_1(
+            a.as_ref(),
+            b,
+            scratch_space.as_mut(),
+            &mut self.as_mut()[..n],
+        );
+        self.as_mut()[n] = carry;
+    }
+}
+
+impl<D: AsRef<[Digit]>> Add<u8> for &BigInt<D> {
+    type Output = BigInt;
+
+    #[inline(always)]
+    fn add(self, rhs: u8) -> Self::Output {
+        self + Digit::from(rhs)
+    }
+}
+
+impl<D: AsRef<[Digit]>> Add<u16> for &BigInt<D> {
+    type Output = BigInt;
+
+    #[inline(always)]
+    fn add(self, rhs: u16) -> Self::Output {
+        self + Digit::from(rhs)
+    }
+}
+
+impl<D: AsRef<[Digit]>> Add<u32> for &BigInt<D> {
+    type Output = BigInt;
+
+    #[inline(always)]
+    fn add(self, rhs: u32) -> Self::Output {
+        self + Digit::from(rhs)
+    }
+}
+
+impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for Digit {
+    type Output = BigInt;
+
+    #[inline(always)]
+    fn add(self, rhs: &BigInt<D>) -> Self::Output {
+        rhs + self
+    }
+}
+
+impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u8 {
+    type Output = BigInt;
+
+    #[inline(always)]
+    fn add(self, rhs: &BigInt<D>) -> Self::Output {
+        rhs + self
+    }
+}
+
+impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u16 {
+    type Output = BigInt;
+
+    #[inline(always)]
+    fn add(self, rhs: &BigInt<D>) -> Self::Output {
+        rhs + self
+    }
+}
+
+impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u32 {
+    type Output = BigInt;
+
+    #[inline(always)]
+    fn add(self, rhs: &BigInt<D>) -> Self::Output {
+        rhs + self
     }
 }
 
@@ -231,6 +388,12 @@ impl<'b> ScratchSpace<'b> {
             },
         }
     }
+
+    /// Size of scratch space required for digit addition
+    #[inline(always)]
+    pub fn digit_addition(n: usize) -> usize {
+        ops::add_1_itch(n)
+    }
 }
 
 impl<'b> From<&'b mut [Digit]> for ScratchSpace<'b> {
@@ -243,7 +406,7 @@ impl<'b> From<&'b mut [Digit]> for ScratchSpace<'b> {
 impl<'b> AsMut<[Digit]> for ScratchSpace<'b> {
     #[inline(always)]
     fn as_mut(&mut self) -> &mut [Digit] {
-        &mut self.0
+        self.0
     }
 }
 
@@ -258,6 +421,21 @@ mod tests {
         #[test]
         fn add_two_numbers(a: Vec<u32>, b: Vec<u32>) {
             add_two_numbers_prop(&a, &b)?
+        }
+
+        #[test]
+        fn add_number_and_u8(a: Vec<u32>, b: u8) {
+            number_digit_addition_prop(&a, b)?
+        }
+
+        #[test]
+        fn add_number_and_u16(a: Vec<u32>, b: u16) {
+            number_digit_addition_prop(&a, b)?
+        }
+
+        #[test]
+        fn add_number_and_u32(a: Vec<u32>, b: u32) {
+            number_digit_addition_prop(&a, b)?
         }
     }
 
@@ -282,6 +460,32 @@ mod tests {
         let limbs_num = result_num.to_u32_digits();
 
         prop_assert_eq!(strip_padding_u32(&limbs_gmp), limbs_num);
+
+        Ok(())
+    }
+
+    fn number_digit_addition_prop<D>(a: &[u32], b: D) -> Result<(), TestCaseError>
+    where
+        D: Copy,
+        for<'b> &'b BigInt: std::ops::Add<D, Output = BigInt>,
+        for<'b> D: std::ops::Add<&'b BigInt, Output = BigInt>,
+        for<'b> &'b num_bigint::BigUint: std::ops::Add<D, Output = num_bigint::BigUint>,
+    {
+        // We assume that `a` is non-negative
+        prop_assume!(a.is_empty() || (a.last().unwrap() >> 31) == 0);
+
+        let a_gmp = BigInt::from_digits_u32(a).reallocate();
+        let result_gmp_1 = &a_gmp + b;
+        let limbs_gmp_1 = result_gmp_1.to_digits_u32();
+        let result_gmp_2 = b + &a_gmp;
+        let limbs_gmp_2 = result_gmp_2.to_digits_u32();
+
+        let a_num = num_bigint::BigUint::new(a.to_vec());
+        let result_num = &a_num + b;
+        let limbs_num = result_num.to_u32_digits();
+
+        prop_assert_eq!(strip_padding_u32(&limbs_gmp_1), limbs_num.clone());
+        prop_assert_eq!(strip_padding_u32(&limbs_gmp_2), limbs_num);
 
         Ok(())
     }
