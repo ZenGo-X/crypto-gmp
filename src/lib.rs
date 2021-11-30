@@ -257,10 +257,10 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
     /// Computes `a + b`, writes result to `self`
     ///
     /// It is a low-level function allowing you to manage allocations. Its safe analogue is
-    /// `&a + b`
+    /// [`&a + b`](#impl-Add%3CDigit%3E).
     ///
     /// ## Safety
-    /// Assuming that `a` has [sizes][size] `n`:
+    /// Assuming that `a` has [size] `n`:
     /// * `n > 0`
     /// * [Size][size] of `self` must be exactly `n+1` bytes
     /// * Size of `scratch_space` must be exactly [`ScratchSpace::digit_addition(n)`](ScratchSpace::digit_addition)
@@ -290,6 +290,7 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
 impl<D: AsRef<[Digit]>> Add<u8> for &BigInt<D> {
     type Output = BigInt;
 
+    #[inline(always)]
     fn add(self, rhs: u8) -> Self::Output {
         self + Digit::from(rhs)
     }
@@ -298,6 +299,7 @@ impl<D: AsRef<[Digit]>> Add<u8> for &BigInt<D> {
 impl<D: AsRef<[Digit]>> Add<u16> for &BigInt<D> {
     type Output = BigInt;
 
+    #[inline(always)]
     fn add(self, rhs: u16) -> Self::Output {
         self + Digit::from(rhs)
     }
@@ -306,6 +308,7 @@ impl<D: AsRef<[Digit]>> Add<u16> for &BigInt<D> {
 impl<D: AsRef<[Digit]>> Add<u32> for &BigInt<D> {
     type Output = BigInt;
 
+    #[inline(always)]
     fn add(self, rhs: u32) -> Self::Output {
         self + Digit::from(rhs)
     }
@@ -314,6 +317,7 @@ impl<D: AsRef<[Digit]>> Add<u32> for &BigInt<D> {
 impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for Digit {
     type Output = BigInt;
 
+    #[inline(always)]
     fn add(self, rhs: &BigInt<D>) -> Self::Output {
         rhs + self
     }
@@ -322,6 +326,7 @@ impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for Digit {
 impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u8 {
     type Output = BigInt;
 
+    #[inline(always)]
     fn add(self, rhs: &BigInt<D>) -> Self::Output {
         rhs + self
     }
@@ -330,6 +335,7 @@ impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u8 {
 impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u16 {
     type Output = BigInt;
 
+    #[inline(always)]
     fn add(self, rhs: &BigInt<D>) -> Self::Output {
         rhs + self
     }
@@ -338,6 +344,7 @@ impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u16 {
 impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u32 {
     type Output = BigInt;
 
+    #[inline(always)]
     fn add(self, rhs: &BigInt<D>) -> Self::Output {
         rhs + self
     }
@@ -408,7 +415,6 @@ mod tests {
     use proptest::prelude::*;
 
     use crate::digits::tests::strip_padding_u32;
-    use crate::digits::Digit;
     use crate::BigInt;
 
     proptest! {
@@ -419,23 +425,17 @@ mod tests {
 
         #[test]
         fn add_number_and_u8(a: Vec<u32>, b: u8) {
-            number_digit_addition_prop(&a, b, b.into())?
+            number_digit_addition_prop(&a, b)?
         }
 
         #[test]
         fn add_number_and_u16(a: Vec<u32>, b: u16) {
-            number_digit_addition_prop(&a, b, b.into())?
+            number_digit_addition_prop(&a, b)?
         }
 
         #[test]
         fn add_number_and_u32(a: Vec<u32>, b: u32) {
-            number_digit_addition_prop(&a, b, b)?
-        }
-
-        #[test]
-        fn add_number_and_digit(a: Vec<u32>, b: u32) {
-            let b_digit: Digit = b.into();
-            number_digit_addition_prop(&a, b_digit, b)?
+            number_digit_addition_prop(&a, b)?
         }
     }
 
@@ -464,15 +464,12 @@ mod tests {
         Ok(())
     }
 
-    fn number_digit_addition_prop<'a, D>(
-        a: &'a [u32],
-        b: D,
-        b_u32: u32,
-    ) -> Result<(), TestCaseError>
+    fn number_digit_addition_prop<D>(a: &[u32], b: D) -> Result<(), TestCaseError>
     where
         D: Copy,
         for<'b> &'b BigInt: std::ops::Add<D, Output = BigInt>,
         for<'b> D: std::ops::Add<&'b BigInt, Output = BigInt>,
+        for<'b> &'b num_bigint::BigUint: std::ops::Add<D, Output = num_bigint::BigUint>,
     {
         // We assume that `a` is non-negative
         prop_assume!(a.is_empty() || (a.last().unwrap() >> 31) == 0);
@@ -484,7 +481,7 @@ mod tests {
         let limbs_gmp_2 = result_gmp_2.to_digits_u32();
 
         let a_num = num_bigint::BigUint::new(a.to_vec());
-        let result_num = a_num + b_u32;
+        let result_num = &a_num + b;
         let limbs_num = result_num.to_u32_digits();
 
         prop_assert_eq!(strip_padding_u32(&limbs_gmp_1), limbs_num.clone());
