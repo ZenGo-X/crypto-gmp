@@ -6,7 +6,7 @@ use gmp_mpfr_sys::gmp::size_t;
 use subtle::{Choice, ConditionallySelectable};
 use zeroize::Zeroize;
 
-use crate::digits::Digit;
+use crate::digits::{Digit, U64};
 
 pub mod digits;
 mod ops;
@@ -314,6 +314,15 @@ impl<D: AsRef<[Digit]>> Add<u32> for &BigInt<D> {
     }
 }
 
+impl<D: AsRef<[Digit]>> Add<u64> for &BigInt<D> {
+    type Output = BigInt;
+
+    #[inline(always)]
+    fn add(self, rhs: u64) -> Self::Output {
+        self + &BigInt::from_digits(&U64::from(rhs))
+    }
+}
+
 impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for Digit {
     type Output = BigInt;
 
@@ -342,6 +351,15 @@ impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u16 {
 }
 
 impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u32 {
+    type Output = BigInt;
+
+    #[inline(always)]
+    fn add(self, rhs: &BigInt<D>) -> Self::Output {
+        rhs + self
+    }
+}
+
+impl<'n, D: AsRef<[Digit]>> Add<&'n BigInt<D>> for u64 {
     type Output = BigInt;
 
     #[inline(always)]
@@ -435,6 +453,11 @@ mod tests {
 
         #[test]
         fn add_number_and_u32(a: Vec<u32>, b: u32) {
+            number_digit_addition_prop(&a, b)?
+        }
+
+        #[test]
+        fn add_number_and_u64(a: Vec<u32>, b: u64) {
             number_digit_addition_prop(&a, b)?
         }
     }
