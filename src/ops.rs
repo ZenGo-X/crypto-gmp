@@ -54,16 +54,16 @@ pub fn add_1_itch(n: usize) -> usize {
 }
 
 /// Takes two integers `a` and `b` represented with sequence of limbs of size `n` and `m` in order
-/// from least to most significant. Computes addition `a+b` and writes it to `output`. Return a carry
-/// digit.
+/// from least to most significant. Computes addition `a+b` and writes it to `output`.
+/// Returns a carry digit.
 ///
 /// ## Safety
 /// Following requirements must be met:
 /// * `n > m > 0`
-///   Ie. size of `a` must be greater than `b`. It does not implies that `a > b` since both numbers
+///   Ie. size of `a` must be greater than `b`. It does not imply that `a > b` since both numbers
 ///   can be padded with zeroes. `b` must not be empty.
-/// * Size of `output` must be exactly `n` bytes. `output` may be filled with arbitrary data.
-/// * Size of `scratch_space` must be exactly `add_n_m_itch(n, m)` bytes. `scratch_space` may be
+/// * Size of `output` must be exactly `n` limbs. `output` may be filled with arbitrary data.
+/// * Size of `scratch_space` must be exactly `add_n_m_itch(n, m)` limbs. `scratch_space` may be
 ///   filled with arbitrary data.
 ///
 /// ## Guarantees
@@ -84,7 +84,7 @@ pub fn add_1_itch(n: usize) -> usize {
 /// 1) We take `m` least significant limbs from each number (ie. `&a[0..m]` and `&b[0..m]`) and
 ///    add them using [mpn_add_n] (which is constant time). Result is written to `&mut output[0..m]`.
 ///    Function returns a `carry` limb
-/// 2) We take `n-m` most significant limbs from number `a` (`&a[m..n-m]`) and add to them a `carry`
+/// 2) We take `n-m` most significant limbs from number `a` (`&a[m..n]`) and add to them a `carry`
 ///    limb using [mpn_sec_add_1]. Result is written to `&mut output[m..n]`. Function return a
 ///    `carry2` limb
 /// 3) We return `carry2`
@@ -107,14 +107,14 @@ pub unsafe fn add_n_m(
     let pa = a.as_ptr() as *const limb_t;
     let pb = b.as_ptr() as *const limb_t;
     let pout = output.as_mut_ptr() as *mut limb_t;
-    let scratch_space = scratch_space.as_mut_ptr() as *mut limb_t;
+    let scratch_space_ = scratch_space.as_mut_ptr() as *mut limb_t;
 
     let carry = gmp::mpn_add_n(pout, pa, pb, m);
 
     let pa = pa.add(b.len());
     let output = pout.add(b.len());
     let tail = n - m;
-    let carry = gmp::mpn_sec_add_1(output, pa, tail, carry, scratch_space);
+    let carry = gmp::mpn_sec_add_1(output, pa, tail, carry, scratch_space_);
 
     Digit::from_limb(carry)
 }
@@ -125,6 +125,142 @@ pub unsafe fn add_n_m(
 /// Requires that `n` is greater than `m`, ie `n > m`
 pub unsafe fn add_n_m_itch(n: usize, m: usize) -> usize {
     gmp::mpn_sec_add_1_itch((n - m) as _) as _
+}
+
+/// Takes two integers `a` and `b` represented with sequence of limbs of size `n` and `m` in order
+/// from least to most significant. Computes multiplication `a*b` and writes it to `output`.
+///
+/// ## Safety
+/// Following requirements must be met:
+/// * `n >= m > 0`
+///   Ie. size of `a` must be greater or equal than `b`. It does not imply that `a > b` since both numbers
+///   can be padded with zeroes. `b` must not be empty.
+/// * Size of `output` must be exactly `n+m` limbs. `output` may be filled with arbitrary data.
+/// * Size of `scratch_space` must be exactly [`mul_n_m_itch(n, m)`](mul_n_m_itch) limbs.
+///   `scratch_space` may be filled with arbitrary data.
+///
+/// ## Guarantees
+/// Function is guaranteed to be constant time in size of its arguments. Ie. the amount of instructions
+/// and memory access patterns should be the same for all numbers with the same `n` and `m`.
+///
+/// ## Algorithm
+/// This method calls the [mpn_sec_mul](gmp::mpn_sec_mul) function.
+pub unsafe fn mul_n_m(a: &[Digit], b: &[Digit], scratch_space: &mut [Digit], output: &mut [Digit]) {
+    debug_assert!(a.len() >= b.len());
+    debug_assert!(!b.is_empty());
+    debug_assert_eq!(output.len(), a.len() + b.len());
+    debug_assert_eq!(scratch_space.len(), mul_n_m_itch(a.len(), b.len()));
+
+    let n = a.len() as size_t;
+    let m = b.len() as size_t;
+    let pa = a.as_ptr() as *const limb_t;
+    let pb = b.as_ptr() as *const limb_t;
+    let pout = output.as_mut_ptr() as *mut limb_t;
+    let scratch_space_new = scratch_space.as_mut_ptr() as *mut limb_t;
+
+    gmp::mpn_sec_mul(pout, pa, n, pb, m, scratch_space_new);
+}
+
+/// Returns size of scratch space required for [`mpn_sec_mul`](gmp::mpn_sec_mul) function.
+///
+/// ## Safety
+/// Requires that `n` is greater or equal than `m`, ie `n >= m`
+pub unsafe fn mul_n_m_itch(n: usize, m: usize) -> usize {
+    gmp::mpn_sec_mul_itch(n as _, m as _) as _
+}
+
+/// Takes two integers `a` and `b` represented with sequence of limbs of size `n` and `m` in order
+/// from least to most significant. Computes floor of the division `floor(a/b)` and writes it to `output`,
+/// also writing the remainder `a mod b` to the most significant `m` limbs of `a`. Accordingly, `a` must be mutable.
+///
+/// ## Safety
+/// Following requirements must be met:
+/// * `n >= m > 0`
+///   Ie. size of `a` must be greater than `b`. It does not imply that `a > b` since both numbers
+///   can be padded with zeroes. `b` must not be empty.
+/// * The most significant limb of `b` must be non-zero.
+/// * Size of `output` must be exactly `n-m` limbs. `output` may be filled with arbitrary data.
+/// * Size of `scratch_space` must be exactly [`div_n_m_itch(n, m)`](div_n_m_itch) limbs.
+///   `scratch_space` may be filled with arbitrary data.
+///
+/// ## Guarantees
+/// Function is guaranteed to be constant time in size of its arguments. Ie. the amount of instructions
+/// and memory access patterns should be the same for all numbers with the same `n` and `m`.
+///
+/// ## Algorithm
+/// This method calls the [mpn_sec_div_qr](gmp::mpn_sec_div_qr) function.
+pub unsafe fn div_n_m(
+    a: &mut [Digit],
+    b: &[Digit],
+    scratch_space: &mut [Digit],
+    output: &mut [Digit],
+) -> Digit {
+    debug_assert!(a.len() >= b.len());
+    debug_assert!(!b.is_empty());
+    debug_assert!(b.last().unwrap().ne(&Digit::zero()));
+    debug_assert_eq!(output.len(), a.len() - b.len());
+    debug_assert_eq!(scratch_space.len(), div_n_m_itch(a.len(), b.len()));
+
+    let n = a.len() as size_t;
+    let m = b.len() as size_t;
+    let pa = a.as_mut_ptr() as *mut limb_t;
+    let pb = b.as_ptr() as *const limb_t;
+    let pout = output.as_mut_ptr() as *mut limb_t;
+    let scratch_space = scratch_space.as_mut_ptr() as *mut limb_t;
+
+    let carry = gmp::mpn_sec_div_qr(pout, pa, n, pb, m, scratch_space);
+    Digit::from_limb(carry)
+}
+
+/// Returns size of scratch space required for [`mpn_sec_div_qr`](gmp::mpn_sec_div_qr) function.
+///
+/// ## Safety
+/// Requires that `n` is greater or equal than `m`, ie `n >= m`
+pub unsafe fn div_n_m_itch(n: usize, m: usize) -> usize {
+    gmp::mpn_sec_div_qr_itch(n as _, m as _) as _
+}
+
+/// Takes two integers `a` and `b` represented with sequence of limbs of size `n` and `m` in order
+/// from least to most significant. Computes the remainder of the division `a mod b`
+/// to the most significant `m` limbs of `a`. If you need both quotient AND remainder, consider using
+/// [`div_n_m(n, m)`](div_n_m) method. To only calculate the remainder, use this method.
+///
+/// ## Safety
+/// Following requirements must be met:
+/// * `n >= m > 0`
+///   Ie. size of `a` must be greater or equal than `b`. It does not imply that `a > b` since both numbers
+///   can be padded with zeroes. `b` must not be empty.
+/// * The most significant limb of `b` must be non-zero.
+/// * Size of `scratch_space` must be exactly [`mod_n_m_itch(n, m)`](mod_n_m_itch) limbs.
+///   `scratch_space` may be filled with arbitrary data.
+///
+/// ## Guarantees
+/// Function is guaranteed to be constant time in size of its arguments. Ie. the amount of instructions
+/// and memory access patterns should be the same for all numbers with the same `n` and `m`.
+///
+/// ## Algorithm
+/// This method calls the [mpn_sec_div_r](gmp::mpn_sec_div_r) function.
+pub unsafe fn mod_n_m(a: &mut [Digit], b: &[Digit], scratch_space: &mut [Digit]) {
+    debug_assert!(a.len() >= b.len());
+    debug_assert!(!b.is_empty());
+    debug_assert!(b.last().unwrap().ne(&Digit::zero()));
+    debug_assert_eq!(scratch_space.len(), mod_n_m_itch(a.len(), b.len()));
+
+    let n = a.len() as size_t;
+    let m = b.len() as size_t;
+    let pa = a.as_mut_ptr() as *mut limb_t;
+    let pb = b.as_ptr() as *const limb_t;
+    let scratch_space = scratch_space.as_mut_ptr() as *mut limb_t;
+
+    gmp::mpn_sec_div_r(pa, n, pb, m, scratch_space);
+}
+
+/// Returns size of scratch space required for [`mpn_sec_div_qr`](gmp::mpn_sec_div_qr) function.
+///
+/// ## Safety
+/// Requires that `n` is greater or equal than `m`, ie `n >= m`
+pub unsafe fn mod_n_m_itch(n: usize, m: usize) -> usize {
+    gmp::mpn_sec_div_r_itch(n as _, m as _) as _
 }
 
 /// Takes two integers `a` and `b` represented with sequence of limbs of size `n` and `m` in order
@@ -152,6 +288,18 @@ pub fn reorder<'n>(a: &'n [Digit], b: &'n [Digit]) -> (&'n [Digit], &'n [Digit])
     let b = unsafe { slice::from_raw_parts(b_ptr as _, m as _) };
 
     (a, b)
+}
+
+/// Takes an integer `a` and counts it's length without leading zeroes.
+pub fn len_without_leading_zeroes(a: &[Digit]) -> usize {
+    if a.is_empty() {
+        return 0;
+    }
+    let mut m = a.len();
+    while (m > 0) && a[m - 1].eq(&Digit::zero()) {
+        m -= 1;
+    }
+    m
 }
 
 #[cfg(test)]
