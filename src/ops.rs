@@ -107,14 +107,14 @@ pub unsafe fn add_n_m(
     let pa = a.as_ptr() as *const limb_t;
     let pb = b.as_ptr() as *const limb_t;
     let pout = output.as_mut_ptr() as *mut limb_t;
-    let scratch_space_ = scratch_space.as_mut_ptr() as *mut limb_t;
+    let scratch_space = scratch_space.as_mut_ptr() as *mut limb_t;
 
     let carry = gmp::mpn_add_n(pout, pa, pb, m);
 
     let pa = pa.add(b.len());
     let output = pout.add(b.len());
     let tail = n - m;
-    let carry = gmp::mpn_sec_add_1(output, pa, tail, carry, scratch_space_);
+    let carry = gmp::mpn_sec_add_1(output, pa, tail, carry, scratch_space);
 
     Digit::from_limb(carry)
 }
@@ -176,7 +176,7 @@ pub unsafe fn mul_n_m_itch(n: usize, m: usize) -> usize {
 /// ## Safety
 /// Following requirements must be met:
 /// * `n >= m > 0`
-///   Ie. size of `a` must be greater than `b`. It does not imply that `a > b` since both numbers
+///   Ie. size of `a` must be greater than `b`. It does not imply that `a > b` since `a`
 ///   can be padded with zeroes. `b` must not be empty.
 /// * The most significant limb of `b` must be non-zero.
 /// * Size of `output` must be exactly `n-m` limbs. `output` may be filled with arbitrary data.
@@ -197,7 +197,7 @@ pub unsafe fn div_n_m(
 ) -> Digit {
     debug_assert!(a.len() >= b.len());
     debug_assert!(!b.is_empty());
-    debug_assert!(b.last().unwrap().ne(&Digit::zero()));
+    debug_assert_ne!(b.last(), Some(&Digit::zero()));
     debug_assert_eq!(output.len(), a.len() - b.len());
     debug_assert_eq!(scratch_space.len(), div_n_m_itch(a.len(), b.len()));
 

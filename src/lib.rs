@@ -6,7 +6,7 @@ use gmp_mpfr_sys::gmp::size_t;
 use subtle::{Choice, ConditionallySelectable};
 use zeroize::Zeroize;
 
-use crate::digits::{Digit, U64};
+use crate::digits::{Digit, U128, U64};
 
 pub mod digits;
 mod ops;
@@ -69,45 +69,6 @@ impl BigInt<[Digit; 1]> {
     pub fn zero() -> Self {
         BigInt::from_digits([Digit::zero()])
     }
-}
-
-macro_rules! impl_digit_operation {
-    ($name:ident,$op:ident,$tp:ty) => {
-        impl<D: AsRef<[Digit]>> $name<$tp> for &BigInt<D> {
-            type Output = BigInt;
-
-            #[inline(always)]
-            fn $op(self, rhs: $tp) -> Self::Output {
-                self.$op(Digit::from(rhs))
-            }
-        }
-    };
-}
-
-macro_rules! impl_digit_operation_reverse {
-    ($name:ident,$op:ident,$tp:ty) => {
-        impl<'n, D: AsRef<[Digit]>> $name<&'n BigInt<D>> for $tp {
-            type Output = BigInt;
-
-            #[inline(always)]
-            fn $op(self, rhs: &BigInt<D>) -> Self::Output {
-                rhs.$op(self)
-            }
-        }
-    };
-}
-
-macro_rules! impl_u64_operation {
-    ($name:ident,$op:ident) => {
-        impl<D: AsRef<[Digit]>> $name<u64> for &BigInt<D> {
-            type Output = BigInt;
-
-            #[inline(always)]
-            fn $op(self, rhs: u64) -> Self::Output {
-                self.$op(&BigInt::from_digits(&U64::from(rhs)))
-            }
-        }
-    };
 }
 
 impl<D1, D2> Add<&BigInt<D2>> for &BigInt<D1>
@@ -327,16 +288,6 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
     }
 }
 
-impl_digit_operation!(Add, add, u8);
-impl_digit_operation_reverse!(Add, add, u8);
-impl_digit_operation!(Add, add, u16);
-impl_digit_operation_reverse!(Add, add, u16);
-impl_digit_operation!(Add, add, u32);
-impl_digit_operation_reverse!(Add, add, u32);
-impl_u64_operation!(Add, add);
-impl_digit_operation_reverse!(Add, add, u64);
-impl_digit_operation_reverse!(Add, add, Digit);
-
 impl<D1, D2> Mul<&BigInt<D2>> for &BigInt<D1>
 where
     D1: AsRef<[Digit]>,
@@ -493,16 +444,6 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
     }
 }
 
-impl_digit_operation!(Mul, mul, u8);
-impl_digit_operation_reverse!(Mul, mul, u8);
-impl_digit_operation!(Mul, mul, u16);
-impl_digit_operation_reverse!(Mul, mul, u16);
-impl_digit_operation!(Mul, mul, u32);
-impl_digit_operation_reverse!(Mul, mul, u32);
-impl_u64_operation!(Mul, mul);
-impl_digit_operation_reverse!(Mul, mul, u64);
-impl_digit_operation_reverse!(Mul, mul, Digit);
-
 impl<D1, D2> Div<&BigInt<D2>> for &BigInt<D1>
 where
     D1: AsRef<[Digit]>,
@@ -595,7 +536,7 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
     /// ## Safety
     /// Assuming that `a` and `b` have [sizes][size] `n` and `m` respectively:
     /// * `n >= m > 0`
-    /// * [Size][size] of `self` must be exactly `n-m` limbs
+    /// * [Size][size] of `self` must be exactly `n-m+1` limbs
     /// * Size of `scratch_space` must be exactly
     /// [`ScratchSpace::division(n, m)`](ScratchSpace::division) limbs
     ///
@@ -672,16 +613,6 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
         self.div_unchecked(a, &BigInt::from_digits(&[b]), scratch_space);
     }
 }
-
-impl_digit_operation!(Div, div, u8);
-impl_digit_operation_reverse!(Div, div, u8);
-impl_digit_operation!(Div, div, u16);
-impl_digit_operation_reverse!(Div, div, u16);
-impl_digit_operation!(Div, div, u32);
-impl_digit_operation_reverse!(Div, div, u32);
-impl_u64_operation!(Div, div);
-impl_digit_operation_reverse!(Div, div, u64);
-impl_digit_operation_reverse!(Div, div, Digit);
 
 impl<D1, D2> Rem<&BigInt<D2>> for &BigInt<D1>
 where
@@ -829,15 +760,91 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
     }
 }
 
-impl_digit_operation!(Rem, rem, u8);
-impl_digit_operation_reverse!(Rem, rem, u8);
-impl_digit_operation!(Rem, rem, u16);
-impl_digit_operation_reverse!(Rem, rem, u16);
-impl_digit_operation!(Rem, rem, u32);
-impl_digit_operation_reverse!(Rem, rem, u32);
-impl_u64_operation!(Rem, rem);
-impl_digit_operation_reverse!(Rem, rem, u64);
-impl_digit_operation_reverse!(Rem, rem, Digit);
+macro_rules! impl_digit_operations {
+    () => {};
+    ($op_trait:ident $op:ident $rhs:ty, $($rest:tt)*) => {
+        impl<D: AsRef<[Digit]>> $op_trait<$rhs> for &BigInt<D> {
+            type Output = BigInt;
+
+            #[inline(always)]
+            fn $op(self, rhs: $rhs) -> Self::Output {
+                self.$op(Digit::from(rhs))
+            }
+        }
+        impl_digit_operations!{ $($rest)* }
+    };
+}
+
+macro_rules! impl_digit_operations_reverse {
+    () => {};
+    ($op_trait:ident $op:ident $rhs:ty, $($rest:tt)*) => {
+        impl<'n, D: AsRef<[Digit]>> $op_trait<&'n BigInt<D>> for $rhs {
+            type Output = BigInt;
+
+            #[inline(always)]
+            fn $op(self, rhs: &BigInt<D>) -> Self::Output {
+                rhs.$op(self)
+            }
+        }
+        impl_digit_operations_reverse!{ $($rest)* }
+    };
+}
+
+macro_rules! impl_u64_u128_operations {
+    () => {};
+    ($op_trait:ident $op:ident $rh_struct:ident $rhs:ty, $($rest:tt)*) => {
+        impl<D: AsRef<[Digit]>> $op_trait<$rhs> for &BigInt<D> {
+            type Output = BigInt;
+
+            #[inline(always)]
+            fn $op(self, rhs: $rhs) -> Self::Output {
+                self.$op(&BigInt::from_digits(&$rh_struct::from(rhs)))
+            }
+        }
+        impl_u64_u128_operations!{ $($rest)* }
+    };
+}
+
+impl_digit_operations! {
+    Add add u8,
+    Add add u16,
+    Add add u32,
+    Mul mul u8,
+    Mul mul u16,
+    Mul mul u32,
+    Div div u8,
+    Div div u16,
+    Div div u32,
+    Rem rem u8,
+    Rem rem u16,
+    Rem rem u32,
+}
+
+impl_u64_u128_operations! {
+    Add add U64 u64,
+    Add add U128 u128,
+    Mul mul U64 u64,
+    Mul mul U128 u128,
+    Div div U64 u64,
+    Div div U128 u128,
+    Rem rem U64 u64,
+    Rem rem U128 u128,
+}
+
+impl_digit_operations_reverse! {
+    Add add u8,
+    Add add u16,
+    Add add u32,
+    Add add u64,
+    Add add u128,
+    Add add Digit,
+    Mul mul u8,
+    Mul mul u16,
+    Mul mul u32,
+    Mul mul u64,
+    Mul mul u128,
+    Mul mul Digit,
+}
 
 impl<D: AsRef<[Digit]>> AsRef<[Digit]> for BigInt<D> {
     #[inline(always)]
@@ -946,7 +953,6 @@ mod tests {
     use crate::digits::tests::strip_padding_u32;
     use crate::BigInt;
 
-    use crate::digits::Digit;
     use std::ops::{Add, Div, Mul, Rem, Sub};
 
     macro_rules! two_numbers_prop {
@@ -1024,6 +1030,12 @@ mod tests {
         }
 
         #[test]
+        fn add_number_and_u128(a: Vec<u32>, b: u128) {
+            number_digit_prop!(add, &a, b);
+            digit_number_prop!(add, b, &a);
+        }
+
+        #[test]
         fn mul_two_numbers(a: Vec<u32>, b: Vec<u32>) {
             two_numbers_prop!(mul, &a, &b);
         }
@@ -1048,6 +1060,12 @@ mod tests {
 
         #[test]
         fn mul_number_and_u64(a: Vec<u32>, b: u64) {
+            number_digit_prop!(mul, &a, b);
+            digit_number_prop!(mul, b, &a);
+        }
+
+        #[test]
+        fn mul_number_and_u128(a: Vec<u32>, b: u128) {
             number_digit_prop!(mul, &a, b);
             digit_number_prop!(mul, b, &a);
         }
@@ -1084,6 +1102,12 @@ mod tests {
         }
 
         #[test]
+        fn div_number_and_u128(a: Vec<u32>, b: u128) {
+            prop_assume!(b != 0);
+            number_digit_prop!(div, &a, b);
+        }
+
+        #[test]
         fn rem_two_numbers(a: Vec<u32>, b: Vec<u32>) {
             // divisor must not be zero, otherwise division will rightfully panic
             prop_assume!(b.clone().into_iter().any(|d| d != 0));
@@ -1110,6 +1134,12 @@ mod tests {
 
         #[test]
         fn rem_number_and_u64(a: Vec<u32>, b: u64) {
+            prop_assume!(b != 0);
+            number_digit_prop!(rem, &a, b);
+        }
+
+        #[test]
+        fn rem_number_and_u128(a: Vec<u32>, b: u128) {
             prop_assume!(b != 0);
             number_digit_prop!(rem, &a, b);
         }
