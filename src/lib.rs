@@ -761,8 +761,8 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
 }
 
 macro_rules! impl_digit_operations {
-    () => {};
-    ($op_trait:ident $op:ident $rhs:ty, $($rest:tt)*) => {
+    ($($op_trait:ident $op:ident $rhs:ty),+ $(,)?) => {
+        $(
         impl<D: AsRef<[Digit]>> $op_trait<$rhs> for &BigInt<D> {
             type Output = BigInt;
 
@@ -771,13 +771,13 @@ macro_rules! impl_digit_operations {
                 self.$op(Digit::from(rhs))
             }
         }
-        impl_digit_operations!{ $($rest)* }
+        )+
     };
 }
 
 macro_rules! impl_digit_operations_reverse {
-    () => {};
-    ($op_trait:ident $op:ident $rhs:ty, $($rest:tt)*) => {
+    ($($op_trait:ident $op:ident $rhs:ty),+ $(,)?) => {
+        $(
         impl<'n, D: AsRef<[Digit]>> $op_trait<&'n BigInt<D>> for $rhs {
             type Output = BigInt;
 
@@ -786,22 +786,22 @@ macro_rules! impl_digit_operations_reverse {
                 rhs.$op(self)
             }
         }
-        impl_digit_operations_reverse!{ $($rest)* }
+        )+
     };
 }
 
-macro_rules! impl_u64_u128_operations {
-    () => {};
-    ($op_trait:ident $op:ident $rh_struct:ident $rhs:ty, $($rest:tt)*) => {
+macro_rules! impl_operations_for_larger_integers {
+    ($($op_trait:ident $op:ident $rhs_struct:ident $rhs:ty),+ $(,)?) => {
+        $(
         impl<D: AsRef<[Digit]>> $op_trait<$rhs> for &BigInt<D> {
             type Output = BigInt;
 
             #[inline(always)]
             fn $op(self, rhs: $rhs) -> Self::Output {
-                self.$op(&BigInt::from_digits(&$rh_struct::from(rhs)))
+                self.$op(&BigInt::from_digits(&$rhs_struct::from(rhs)))
             }
         }
-        impl_u64_u128_operations!{ $($rest)* }
+        )+
     };
 }
 
@@ -820,7 +820,7 @@ impl_digit_operations! {
     Rem rem u32,
 }
 
-impl_u64_u128_operations! {
+impl_operations_for_larger_integers! {
     Add add U64 u64,
     Add add U128 u128,
     Mul mul U64 u64,
