@@ -291,15 +291,21 @@ pub fn reorder<'n>(a: &'n [Digit], b: &'n [Digit]) -> (&'n [Digit], &'n [Digit])
 }
 
 /// Takes an integer `a` and counts it's length without leading zeroes.
-pub fn len_without_leading_zeroes(a: &[Digit]) -> usize {
-    if a.is_empty() {
-        return 0;
+///
+/// Function is constant time in size of argument.
+pub fn len_without_leading_zeroes(digits: &[Digit]) -> usize {
+    let mut len = digits.len() as size_t;
+    let mut found_non_zero_digit = Choice::from(0);
+
+    for &digit in digits.iter().rev() {
+        let digit_not_zero = Choice::from(u8::from(digit != Digit::zero()));
+        found_non_zero_digit |= digit_not_zero;
+
+        let decreased_len = len - 1;
+        len = size_t::conditional_select(&decreased_len, &len, found_non_zero_digit);
     }
-    let mut m = a.len();
-    while (m > 0) && a[m - 1].eq(&Digit::zero()) {
-        m -= 1;
-    }
-    m
+
+    len as usize
 }
 
 #[cfg(test)]
@@ -327,6 +333,10 @@ mod tests {
         #[test]
         fn reorder_two_numbers(a: Vec<limb_t>, b: Vec<limb_t>) {
             reorder_prop(digits_from_limbs(&a), digits_from_limbs(&b))?
+        }
+        #[test]
+        fn finds_len_without_leading_zeroes_for_arbitrary_number(a: Vec<limb_t>) {
+            finds_len_without_leading_zeroes_for_arbitrary_number_prop(digits_from_limbs(&a))?
         }
     }
 
@@ -399,6 +409,31 @@ mod tests {
         prop_assert_eq!(p1, ex1);
         prop_assert_eq!(p2, ex2);
 
+        Ok(())
+    }
+
+    #[test]
+    fn finds_len_without_leading_zeroes() {
+        assert_eq!(len_without_leading_zeroes(digits_from_limbs(&[])), 0);
+        assert_eq!(len_without_leading_zeroes(digits_from_limbs(&[0])), 0);
+        assert_eq!(len_without_leading_zeroes(digits_from_limbs(&[5])), 1);
+        assert_eq!(len_without_leading_zeroes(digits_from_limbs(&[5, 0])), 1);
+        assert_eq!(len_without_leading_zeroes(digits_from_limbs(&[5, 5])), 2);
+        assert_eq!(len_without_leading_zeroes(digits_from_limbs(&[5, 0, 0])), 1);
+        assert_eq!(len_without_leading_zeroes(digits_from_limbs(&[5, 5, 0])), 2);
+        assert_eq!(len_without_leading_zeroes(digits_from_limbs(&[5, 5, 5])), 3);
+    }
+
+    fn finds_len_without_leading_zeroes_for_arbitrary_number_prop(
+        a: &[Digit],
+    ) -> Result<(), TestCaseError> {
+        let actual_len = len_without_leading_zeroes(a);
+        let expected_len = a.len()
+            - a.iter()
+                .rev()
+                .take_while(|&&digit| digit == Digit::zero())
+                .count();
+        prop_assert_eq!(actual_len, expected_len);
         Ok(())
     }
 }
