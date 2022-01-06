@@ -156,9 +156,9 @@ pub unsafe fn mul_n_m(a: &[Digit], b: &[Digit], scratch_space: &mut [Digit], out
     let pa = a.as_ptr() as *const limb_t;
     let pb = b.as_ptr() as *const limb_t;
     let pout = output.as_mut_ptr() as *mut limb_t;
-    let scratch_space_new = scratch_space.as_mut_ptr() as *mut limb_t;
+    let scratch_space = scratch_space.as_mut_ptr() as *mut limb_t;
 
-    gmp::mpn_sec_mul(pout, pa, n, pb, m, scratch_space_new);
+    gmp::mpn_sec_mul(pout, pa, n, pb, m, scratch_space);
 }
 
 /// Returns size of scratch space required for [`mpn_sec_mul`](gmp::mpn_sec_mul) function.

@@ -2,8 +2,6 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ops::{Add, Div, Mul, Rem};
 
-use gmp_mpfr_sys::gmp::size_t;
-use subtle::{Choice, ConditionallySelectable};
 use zeroize::Zeroize;
 
 use crate::digits::{Digit, U128, U64};
@@ -120,9 +118,9 @@ where
         // Allocate space on heap, split it into `output` that stands for addition result and
         // `scratch_space` that is auxiliary buffer for gmp functions
         let mut buffer = vec![Digit::zero(); output_size + scratch_space_size];
-        let (output, scratch_space) = buffer.split_at_mut(output_size);
+        let (output, scratch_space_) = buffer.split_at_mut(output_size);
         let mut output = BigInt::from_digits(output);
-        let scratch_space = ScratchSpace::new(scratch_space);
+        let scratch_space = ScratchSpace::new(scratch_space_);
 
         unsafe {
             // Safety:
@@ -137,15 +135,7 @@ where
         }
 
         // Now we need to resize `buffer` to `output_size`, ie. we want to strip the allocated scratch
-        // space. But we also wish to check whether the last digit of `output` is zero or not. If it
-        // is, we strip it too
-
-        // Note: we are comparing two size_t integers here, we assume it's constant-time
-        let last_digit_is_zero = Choice::from(u8::from(output.as_ref()[n] == Digit::zero()));
-        let output_size =
-            size_t::conditional_select(&((n + 1) as size_t), &(n as size_t), last_digit_is_zero)
-                as usize;
-
+        // space.
         buffer[output_size..].zeroize();
         buffer.resize(output_size, Digit::zero());
 
@@ -237,12 +227,6 @@ impl<D: AsRef<[Digit]>> Add<Digit> for &BigInt<D> {
             // * We allocated sufficient memory for both output and scratch space
             output.add_digit_unchecked(&BigInt::from_digits(a), rhs, scratch_space);
         };
-
-        // Note: we are comparing two size_t integers here, we assume it's constant-time
-        let last_digit_is_zero = Choice::from(u8::from(output.as_ref()[n] == Digit::zero()));
-        let output_size =
-            size_t::conditional_select(&((n + 1) as size_t), &(n as size_t), last_digit_is_zero)
-                as usize;
 
         // Now we need to resize `buffer` to `output_size`,
         // ie. we want to strip the allocated scratch space.
@@ -344,15 +328,6 @@ where
             );
         };
 
-        // Note: we are comparing two size_t integers here, we assume it's constant-time
-        let last_digit_is_zero =
-            Choice::from(u8::from(output.as_ref()[n + m - 1] == Digit::zero()));
-        let output_size = size_t::conditional_select(
-            &((n + m) as size_t),
-            &((n + m - 1) as size_t),
-            last_digit_is_zero,
-        ) as usize;
-
         // Now we need to resize `buffer` to `output_size`,
         // ie. we want to strip the allocated scratch space.
         buffer[output_size..].zeroize();
@@ -438,13 +413,44 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
         &mut self,
         a: &BigInt<impl AsRef<[Digit]>>,
         b: Digit,
-        mut scratch_space: ScratchSpace,
+        scratch_space: ScratchSpace,
     ) {
         self.mul_unchecked(a, &BigInt::from_digits(&[b]), scratch_space);
     }
 }
 
-impl<D1, D2> Div<&BigInt<D2>> for &BigInt<D1>
+/// [Division](#impl-Div%3C%26%27_%20BigInt%3CD2%3E%3E) and [remainder](#impl-Rem%3C%26%27_%20BigInt%3CD2%3E%3E)
+/// operations require the dividend to start with a non-zero digit. This struct exists solely
+/// to emphasize this fact and is used as a type of dividends in these operations.
+/// Constant-time division is guaranteed relative to the size of unpadded dividends.
+pub struct Unpadded<D: AsRef<[Digit]>>(BigInt<D>);
+
+impl<D: AsRef<[Digit]>> BigInt<D> {
+    /// Remove all leading zeroes from a [`BigInt`](BigInt), converting it into an [unpadded `BigInt`](Unpadded).
+    pub fn as_unpadded(&self) -> Unpadded<Box<[Digit]>> {
+        let self_digits = self.as_ref();
+
+        // m is the length of self without leading zeroes
+        let m = ops::len_without_leading_zeroes(self_digits);
+
+        if m == 0 {
+            panic!("Unpadded BigInt should never be zero");
+        }
+
+        Unpadded(BigInt::from_digits(
+            self_digits[..m].to_vec().into_boxed_slice(),
+        ))
+    }
+}
+
+impl<D: AsRef<[Digit]>> Unpadded<D> {
+    /// Getter for the underlying [`BigInt`](BigInt) that consumes `self`.
+    pub fn to_bigint(&self) -> &BigInt<D> {
+        &self.0
+    }
+}
+
+impl<D1, D2> Div<&Unpadded<D2>> for &BigInt<D1>
 where
     D1: AsRef<[Digit]>,
     D2: AsRef<[Digit]>,
@@ -456,7 +462,7 @@ where
     /// ## Constant time
     /// Division is constant time in size of its arguments. It means that the number of
     /// instructions and memory access patterns remain the same for the same
-    /// `self.size()` and `rhs.size()` (provided that `rhs` does not start from 0).
+    /// `self.size()` and `rhs.to_bigint().size()`.
     ///
     /// ## Zeroizing
     /// This function might allocate some auxiliary buffer on the heap.
@@ -464,22 +470,13 @@ where
     ///
     /// ## Complexity
     /// The complexity is always `O(self.size() * rhs.size())`.
-    ///
-    /// ## Panics
-    /// The method panics if `rhs` equals zero.
-    fn div(self, rhs: &BigInt<D2>) -> Self::Output {
+    fn div(self, rhs: &Unpadded<D2>) -> Self::Output {
         let n = self.size();
         // we have to clone `self` in order to be able to use unchecked division,
         // as it requires its first argument to be mutable
         let mut a = self.reallocate();
-        let (a, b) = (a.as_mut(), rhs.as_ref());
-
-        // m is the length of b without leading zeroes
-        let m = ops::len_without_leading_zeroes(b);
-
-        if m == 0 {
-            panic!("Division by zero");
-        }
+        let (a, b) = (a.as_mut(), rhs.to_bigint());
+        let m = b.size();
 
         // if m > n, then definitely b > a and so floor(a/b) = 0.
         if m > n {
@@ -504,16 +501,8 @@ where
             // Safety:
             // * We checked that n>=m and that n and m are non-zero (see match statement above)
             // * We allocated sufficient memory for both output and scratch space
-            output.div_unchecked(&mut a_bigint, &BigInt::from_digits(&b[..m]), scratch_space);
+            output.div_unchecked(&mut a_bigint, b, scratch_space);
         };
-
-        // Note: we are comparing two size_t integers here, we assume it's constant-time
-        let last_digit_is_zero = Choice::from(u8::from(output.as_ref()[n - m] == Digit::zero()));
-        let output_size = size_t::conditional_select(
-            &((n - m + 1) as size_t),
-            &((n - m) as size_t),
-            last_digit_is_zero,
-        ) as usize;
 
         // Now we need to resize `buffer` to `output_size`,
         // ie. we want to strip the allocated scratch space.
@@ -539,6 +528,7 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
     /// * [Size][size] of `self` must be exactly `n-m+1` limbs
     /// * Size of `scratch_space` must be exactly
     /// [`ScratchSpace::division(n, m)`](ScratchSpace::division) limbs
+    /// * `b` must not start from zero
     ///
     /// Note: we check that these requirements are met using debug assertions.
     ///
@@ -567,7 +557,7 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
 impl<D: AsRef<[Digit]>> Div<Digit> for &BigInt<D> {
     type Output = BigInt;
 
-    /// Computes `self / rhs` where `rhs` is a `Digit`.
+    /// Computes `floor(self / rhs)` where `rhs` is a `Digit`.
     ///
     /// ## Constant time
     /// Irrespective of it's inputs, this method takes `O(self.size())` steps.
@@ -582,7 +572,7 @@ impl<D: AsRef<[Digit]>> Div<Digit> for &BigInt<D> {
     /// ## Panics
     /// The method panics if `rhs` equals zero.
     fn div(self, rhs: Digit) -> Self::Output {
-        self / &BigInt::from_digits(&[rhs])
+        self / &BigInt::from_digits(&[rhs]).as_unpadded()
     }
 }
 
@@ -608,13 +598,13 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
         &mut self,
         a: &mut BigInt<impl AsMut<[Digit]>>,
         b: Digit,
-        mut scratch_space: ScratchSpace,
+        scratch_space: ScratchSpace,
     ) {
         self.div_unchecked(a, &BigInt::from_digits(&[b]), scratch_space);
     }
 }
 
-impl<D1, D2> Rem<&BigInt<D2>> for &BigInt<D1>
+impl<D1, D2> Rem<&Unpadded<D2>> for &BigInt<D1>
 where
     D1: AsRef<[Digit]>,
     D2: AsRef<[Digit]>,
@@ -626,7 +616,7 @@ where
     /// ## Constant time
     /// Division with remainder is constant time in size of its arguments.
     /// It means that the number of instructions and memory access patterns remain the same for the same
-    /// `self.size()` and `rhs.size()` (provided that `rhs` does not start from 0).
+    /// `self.size()` and `rhs.to_bigint().size()`.
     ///
     /// ## Zeroizing
     /// This function might allocate some auxiliary buffer on the heap.
@@ -634,19 +624,11 @@ where
     ///
     /// ## Complexity
     /// The complexity is always `O(self.size() * rhs.size())`.
-    ///
-    /// ## Panics
-    /// The method panics if `rhs` equals zero.
-    fn rem(self, rhs: &BigInt<D2>) -> Self::Output {
+    fn rem(self, rhs: &Unpadded<D2>) -> Self::Output {
         let n = self.size();
 
-        let b = rhs.as_ref();
-        // m is the length of b without leading zeroes
-        let m = ops::len_without_leading_zeroes(b);
-
-        if m == 0 {
-            panic!("Division by zero");
-        }
+        let b = rhs.to_bigint();
+        let m = b.size();
 
         // if m > n, then definitely b > a and so a mod b = a.
         if m > n {
@@ -672,7 +654,7 @@ where
             // Safety:
             // * We checked that n>=m and that n and m are non-zero (see match statement above)
             // * We allocated sufficient memory for the scratch space
-            a_bigint.rem_unchecked(&BigInt::from_digits(&b[..m]), scratch_space);
+            a_bigint.rem_unchecked(b, scratch_space);
         };
 
         let output_size = m;
@@ -708,10 +690,10 @@ impl<D: AsMut<[Digit]>> BigInt<D> {
     /// memory access patterns remain the same for the same `n` and `m`.
     pub unsafe fn rem_unchecked(
         &mut self,
-        a: &BigInt<impl AsRef<[Digit]>>,
+        b: &BigInt<impl AsRef<[Digit]>>,
         mut scratch_space: ScratchSpace,
     ) {
-        ops::mod_n_m(self.as_mut(), a.as_ref(), scratch_space.as_mut());
+        ops::mod_n_m(self.as_mut(), b.as_ref(), scratch_space.as_mut());
     }
 }
 
@@ -733,30 +715,30 @@ impl<D: AsRef<[Digit]>> Rem<Digit> for &BigInt<D> {
     /// ## Panics
     /// The method panics if `rhs` equals zero.
     fn rem(self, rhs: Digit) -> Self::Output {
-        self % &BigInt::from_digits(&[rhs])
+        self % &BigInt::from_digits(&[rhs]).as_unpadded()
     }
 }
 
 impl<D: AsMut<[Digit]>> BigInt<D> {
     /// Computes `self mod a` where `a` is a digit, writes the result to
-    /// the most significant digit of `self`. Accordingly, self must be mutable.
+    /// the most significant digit of `self`. Accordingly, `self` must be mutable.
     ///
     /// It is a low-level function allowing you to manage allocations. Its safe analogue is
     /// [`&a % b`](#impl-Rem%3CDigit%3E).
     ///
     /// ## Safety
-    /// Assuming that `a` has [size] `n`:
-    /// * `n > 0`
+    /// Assuming that `b` has [size] `m`:
+    /// * `m > 0`
     /// * Size of `scratch_space` must be exactly
-    /// [`ScratchSpace::division_remainder(n, 1)`](ScratchSpace::division_remainder) limbs
+    /// [`ScratchSpace::division_remainder(m, 1)`](ScratchSpace::division_remainder) limbs
     ///
     /// [size]: BigInt::size
     ///
     /// ## Constant time
     /// This function is constant time in size of its arguments, ie. number of instructions and
-    /// memory access patterns remain the same for the same `n`.
-    pub unsafe fn rem_digit_unchecked(&mut self, a: Digit, mut scratch_space: ScratchSpace) {
-        self.rem_unchecked(&BigInt::from_digits(&[a]), scratch_space);
+    /// memory access patterns remain the same for the same `m`.
+    pub unsafe fn rem_digit_unchecked(&mut self, b: Digit, scratch_space: ScratchSpace) {
+        self.rem_unchecked(&BigInt::from_digits(&[b]), scratch_space);
     }
 }
 
@@ -790,15 +772,66 @@ macro_rules! impl_digit_operations_reverse {
     };
 }
 
-macro_rules! impl_operations_for_larger_integers {
-    ($($op_trait:ident $op:ident $rhs_struct:ident $rhs:ty),+ $(,)?) => {
+macro_rules! impl_u64_operations {
+    ($($op_trait:ident $op:ident),+ $(,)?) => {
         $(
-        impl<D: AsRef<[Digit]>> $op_trait<$rhs> for &BigInt<D> {
+        impl<D: AsRef<[Digit]>> $op_trait<u64> for &BigInt<D> {
             type Output = BigInt;
 
             #[inline(always)]
-            fn $op(self, rhs: $rhs) -> Self::Output {
-                self.$op(&BigInt::from_digits(&$rhs_struct::from(rhs)))
+            fn $op(self, rhs: u64) -> Self::Output {
+                match &*U64::from(rhs) {
+                    &[digit] => self.$op(digit),
+                    digits => self.$op(&BigInt::from_digits(digits)),
+                }
+            }
+        }
+        )+
+    };
+}
+
+macro_rules! impl_u64_div_operations {
+    ($($op_trait:ident $op:ident),+ $(,)?) => {
+        $(
+        impl<D: AsRef<[Digit]>> $op_trait<u64> for &BigInt<D> {
+            type Output = BigInt;
+
+            #[inline(always)]
+            fn $op(self, rhs: u64) -> Self::Output {
+                match &*U64::from(rhs) {
+                    &[digit] => self.$op(digit),
+                    digits => self.$op(&BigInt::from_digits(digits).as_unpadded()),
+                }
+            }
+        }
+        )+
+    };
+}
+
+macro_rules! impl_u128_operations {
+    ($($op_trait:ident $op:ident),+ $(,)?) => {
+        $(
+        impl<D: AsRef<[Digit]>> $op_trait<u128> for &BigInt<D> {
+            type Output = BigInt;
+
+            #[inline(always)]
+            fn $op(self, rhs: u128) -> Self::Output {
+                self.$op(&BigInt::from_digits(U128::from(rhs)))
+            }
+        }
+        )+
+    };
+}
+
+macro_rules! impl_u128_div_operations {
+    ($($op_trait:ident $op:ident),+ $(,)?) => {
+        $(
+        impl<D: AsRef<[Digit]>> $op_trait<u128> for &BigInt<D> {
+            type Output = BigInt;
+
+            #[inline(always)]
+            fn $op(self, rhs: u128) -> Self::Output {
+                self.$op(&BigInt::from_digits(U128::from(rhs)).as_unpadded())
             }
         }
         )+
@@ -820,15 +853,24 @@ impl_digit_operations! {
     Rem rem u32,
 }
 
-impl_operations_for_larger_integers! {
-    Add add U64 u64,
-    Add add U128 u128,
-    Mul mul U64 u64,
-    Mul mul U128 u128,
-    Div div U64 u64,
-    Div div U128 u128,
-    Rem rem U64 u64,
-    Rem rem U128 u128,
+impl_u64_operations! {
+    Add add,
+    Mul mul,
+}
+
+impl_u64_div_operations! {
+    Div div,
+    Rem rem,
+}
+
+impl_u128_operations! {
+    Add add,
+    Mul mul,
+}
+
+impl_u128_div_operations! {
+    Div div,
+    Rem rem,
 }
 
 impl_digit_operations_reverse! {
@@ -953,13 +995,29 @@ mod tests {
     use crate::digits::tests::strip_padding_u32;
     use crate::BigInt;
 
-    use std::ops::{Add, Div, Mul, Rem, Sub};
+    use std::ops::{Add, Div, Mul, Rem};
 
     macro_rules! two_numbers_prop {
         ($op:ident,$a:expr,$b:expr) => {
             let a_gmp = BigInt::from_digits_u32($a);
             let b_gmp = BigInt::from_digits_u32($b);
             let result_gmp = &a_gmp.$op(&b_gmp);
+            let limbs_gmp = result_gmp.to_digits_u32();
+
+            let a_num = num_bigint::BigUint::new($a.to_vec());
+            let b_num = num_bigint::BigUint::new($b.to_vec());
+            let result_num = a_num.$op(b_num);
+            let limbs_num = result_num.to_u32_digits();
+
+            prop_assert_eq!(strip_padding_u32(&limbs_gmp), limbs_num.clone());
+        };
+    }
+
+    macro_rules! two_numbers_div_prop {
+        ($op:ident,$a:expr,$b:expr) => {
+            let a_gmp = BigInt::from_digits_u32($a);
+            let b_gmp = BigInt::from_digits_u32($b);
+            let result_gmp = &a_gmp.$op(&b_gmp.as_unpadded());
             let limbs_gmp = result_gmp.to_digits_u32();
 
             let a_num = num_bigint::BigUint::new($a.to_vec());
@@ -1074,7 +1132,7 @@ mod tests {
         fn div_two_numbers(a: Vec<u32>, b: Vec<u32>) {
             // divisor must not be zero, otherwise division will rightfully panic
             prop_assume!(b.clone().into_iter().any(|d| d != 0));
-            two_numbers_prop!(div, &a, &b);
+            two_numbers_div_prop!(div, &a, &b);
         }
 
         #[test]
@@ -1111,7 +1169,7 @@ mod tests {
         fn rem_two_numbers(a: Vec<u32>, b: Vec<u32>) {
             // divisor must not be zero, otherwise division will rightfully panic
             prop_assume!(b.clone().into_iter().any(|d| d != 0));
-            two_numbers_prop!(rem, &a, &b);
+            two_numbers_div_prop!(rem, &a, &b);
         }
 
         #[test]
@@ -1151,11 +1209,11 @@ mod tests {
             let a = &BigInt::from_digits_u32(&a).reallocate();
             // making sure that division and remainder work with zero-padded divisors
             b_mut.extend(&[0]);
-            let b = &BigInt::from_digits_u32(&b_mut).reallocate();
-            let q = a / b;
-            let r = a % b;
+            let b = BigInt::from_digits_u32(&b_mut).reallocate();
+            let q = a / &b.as_unpadded();
+            let r = a %& b.as_unpadded();
 
-            let lhs = &(&q * b) + &r;
+            let lhs = &(&q * &b) + &r;
             let lhs = lhs.to_digits_u32();
             let rhs = a.to_digits_u32();
             prop_assert_eq!(strip_padding_u32(&lhs), strip_padding_u32(&rhs));
@@ -1164,16 +1222,16 @@ mod tests {
 
     #[test]
     fn dummy_test() -> Result<(), TestCaseError> {
-        two_numbers_prop!(add, &[0], &[0, 0, 0]);
+        two_numbers_prop!(add, &[0, 0, 0], &[0]);
         Ok(())
     }
 
     #[test]
-    #[should_panic(expected = "Division by zero")]
+    #[should_panic(expected = "Unpadded BigInt should never be zero")]
     fn division_by_zero() -> () {
         let a = BigInt::from_digits_u32(&[42, 42]).reallocate();
         let b = BigInt::from_digits_u32(&[0, 0, 0]).reallocate();
-        let _ = &a / &b;
+        let _ = &a / &b.as_unpadded();
         ()
     }
 }
